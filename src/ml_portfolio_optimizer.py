@@ -29,185 +29,319 @@ class MLPortfolioOptimizer:
             
         features_list = []
         
-        for asset in self.prices.columns:
+        market_return = self.returns.mean(axis=1)
+        
+        market_features = pd.DataFrame(index=self.prices.index)
+        market_features['market_mom_5'] = market_return.rolling(5).mean()
+        market_features['market_mom_10'] = market_return.rolling(10).mean()
+        market_features['market_vol_5'] = market_return.rolling(5).std()
+        market_features['market_vol_20'] = market_return.rolling(20).std()
+        market_features['vol_regime'] = (market_features['market_vol_5'] / market_features['market_vol_20']).fillna(1)
+        
+        market_features['dispersion'] = self.returns.std(axis=1)
+        market_features['skew_proxy'] = self.returns.skew(axis=1).rolling(10).mean()
+        
+        pca_returns = self.returns.dropna()
+        if len(pca_returns) > 60:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=3)
+            pca_features = pca.fit_transform(pca_returns.fillna(0))
+            
+            for i in range(3):
+                market_features.loc[pca_returns.index, f'pca_{i}'] = pca_features[:, i]
+        
+        sector_groups = {
+            'tech': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'ADBE', 'CRM', 'NFLX'],
+            'financials': ['JPM', 'V'],
+            'healthcare': ['JNJ', 'UNH'],
+            'consumer': ['PG', 'HD', 'COST', 'DIS'],
+            'bonds': ['TLT', 'IEF', 'SHY', 'LQD', 'HYG'],
+            'commodities': ['GLD', 'SLV', 'USO'],
+            'international': ['VEA', 'VWO', 'VNQ']
+        }
+        
+        for sector_name, tickers in sector_groups.items():
+            sector_assets = [t for t in tickers if t in self.returns.columns]
+            if len(sector_assets) > 0:
+                sector_returns = self.returns[sector_assets].mean(axis=1)
+                market_features[f'{sector_name}_mom'] = sector_returns.rolling(10).mean()
+                market_features[f'{sector_name}_vol'] = sector_returns.rolling(20).std()
+        
+        key_assets = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'JPM', 'TLT', 'GLD']
+        available_assets = [a for a in key_assets if a in self.prices.columns]
+        
+        for asset in available_assets[:6]:
             price_series = self.prices[asset]
             return_series = self.returns[asset]
             
             asset_features = pd.DataFrame(index=price_series.index)
             
-            asset_features[f'{asset}_ma_5'] = price_series.rolling(5).mean()
-            asset_features[f'{asset}_ma_20'] = price_series.rolling(20).mean()
-            asset_features[f'{asset}_ma_50'] = price_series.rolling(50).mean()
+            asset_features[f'{asset}_mom_3'] = return_series.rolling(3).mean()
+            asset_features[f'{asset}_mom_10'] = return_series.rolling(10).mean()
+            asset_features[f'{asset}_mom_21'] = return_series.rolling(21).mean()
             
             asset_features[f'{asset}_vol_5'] = return_series.rolling(5).std()
-            asset_features[f'{asset}_vol_20'] = return_series.rolling(20).std()
+            asset_features[f'{asset}_vol_21'] = return_series.rolling(21).std()
             
-            asset_features[f'{asset}_momentum_5'] = price_series.pct_change(5)
-            asset_features[f'{asset}_momentum_20'] = price_series.pct_change(20)
+            asset_features[f'{asset}_vol_regime'] = (asset_features[f'{asset}_vol_5'] / 
+                                                   asset_features[f'{asset}_vol_21']).fillna(1)
             
-            gains = return_series.where(return_series > 0, 0).rolling(14).mean()
-            losses = (-return_series.where(return_series < 0, 0)).rolling(14).mean()
-            rs = gains / losses.replace(0, np.inf)
-            asset_features[f'{asset}_rsi'] = 100 - (100 / (1 + rs))
+            sma_20 = price_series.rolling(20).mean()
+            sma_50 = price_series.rolling(50).mean()
+            asset_features[f'{asset}_trend'] = (sma_20 / sma_50 - 1).fillna(0)
             
-            ma20 = asset_features[f'{asset}_ma_20']
-            std20 = price_series.rolling(20).std()
-            asset_features[f'{asset}_bb_upper'] = ma20 + (2 * std20)
-            asset_features[f'{asset}_bb_lower'] = ma20 - (2 * std20)
-            bb_width = asset_features[f'{asset}_bb_upper'] - asset_features[f'{asset}_bb_lower']
-            asset_features[f'{asset}_bb_position'] = (price_series - asset_features[f'{asset}_bb_lower']) / bb_width
+            asset_features[f'{asset}_mean_revert'] = ((price_series - sma_20) / sma_20).fillna(0)
+            
+            high_low_range = price_series.rolling(20).max() - price_series.rolling(20).min()
+            asset_features[f'{asset}_range_pos'] = ((price_series - price_series.rolling(20).min()) / 
+                                                   high_low_range).fillna(0.5)
+            
+            returns_rank = return_series.rolling(63).rank(pct=True)
+            asset_features[f'{asset}_momentum_rank'] = returns_rank.fillna(0.5)
             
             features_list.append(asset_features)
         
-        all_features = pd.concat(features_list, axis=1)
+        all_features = pd.concat([market_features] + features_list, axis=1)
         
-        market_return = self.returns.mean(axis=1)
-        all_features['market_vol'] = market_return.rolling(20).std()
-        all_features['market_momentum'] = market_return.rolling(10).mean()
-        all_features['fear_index'] = self.returns.std(axis=1).rolling(20).mean()
+        feature_cols = []
+        for col in all_features.columns:
+            if not all_features[col].isna().all():
+                feature_cols.append(col)
+        
+        all_features = all_features[feature_cols].fillna(method='ffill').fillna(0)
         
         self.features = all_features.dropna()
+        print(f"Created {self.features.shape[1]} engineered features")
         return self.features
     
-    def predict_returns(self, test_size=0.2, random_state=42, prediction_horizon=5):
+    def predict_returns(self, test_size=0.25, random_state=42, prediction_horizon=1):
         if self.features is None:
             self.create_features()
         
         models = {}
         predictions = {}
-        scalers = {}
+        
+        print(f"Training ensemble models with {prediction_horizon}-day prediction horizon...")
         
         aligned_features = self.features.reindex(self.returns.index).dropna()
         aligned_returns = self.returns.reindex(aligned_features.index)
+        
+        from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+        from sklearn.linear_model import Ridge, ElasticNet
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.feature_selection import SelectKBest, f_regression
+        import warnings
+        warnings.filterwarnings('ignore')
+        
         for asset in self.returns.columns:
-            print(f"Training model for {asset}...")
+            print(f"Training ensemble for {asset}...")
             
             target = aligned_returns[asset].shift(-prediction_horizon).dropna()
-            features_subset = aligned_features.loc[target.index]
+            feature_data = aligned_features.loc[target.index].copy()
             
-            split_idx = int(len(features_subset) * (1 - test_size))
+            if len(target) < 120:
+                print(f"Insufficient data for {asset}, skipping...")
+                continue
             
-            X_train = features_subset.iloc[:split_idx]
-            X_test = features_subset.iloc[split_idx:]
+            split_idx = int(len(feature_data) * (1 - test_size))
+            
+            X_train = feature_data.iloc[:split_idx]
+            X_test = feature_data.iloc[split_idx:]
             y_train = target.iloc[:split_idx]
             y_test = target.iloc[split_idx:]
             
-            asset_scaler = StandardScaler()
-            X_train_scaled = asset_scaler.fit_transform(X_train)
-            X_test_scaled = asset_scaler.transform(X_test)
-            scalers[asset] = asset_scaler
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train.fillna(0))
+            X_test_scaled = scaler.transform(X_test.fillna(0))
             
-            model = RandomForestRegressor(
-                n_estimators=200,
-                max_depth=15,
-                min_samples_split=10,
-                min_samples_leaf=5,
-                max_features='sqrt',
-                random_state=random_state,
-                n_jobs=-1
-            )
+            selector = SelectKBest(f_regression, k=min(20, X_train_scaled.shape[1]))
+            X_train_selected = selector.fit_transform(X_train_scaled, y_train)
+            X_test_selected = selector.transform(X_test_scaled)
             
-            model.fit(X_train_scaled, y_train)
+            tscv = TimeSeriesSplit(n_splits=3)
             
-            train_pred = model.predict(X_train_scaled)
-            test_pred = model.predict(X_test_scaled)
-            
-            train_score = model.score(X_train_scaled, y_train)
-            test_score = model.score(X_test_scaled, y_test)
-            
-            models[asset] = {
-                'model': model,
-                'scaler': asset_scaler,
-                'train_score': train_score,
-                'test_score': test_score,
-                'feature_importance': dict(zip(features_subset.columns, model.feature_importances_)),
-                'prediction_horizon': prediction_horizon
+            models_to_try = {
+                'ridge': Ridge(alpha=2.0, random_state=random_state),
+                'elastic': ElasticNet(alpha=0.5, l1_ratio=0.5, random_state=random_state, max_iter=2000),
+                'rf': RandomForestRegressor(
+                    n_estimators=50,
+                    max_depth=6,
+                    min_samples_split=30,
+                    min_samples_leaf=15,
+                    max_features=0.4,
+                    random_state=random_state,
+                    n_jobs=-1
+                ),
+                'gb': GradientBoostingRegressor(
+                    n_estimators=50,
+                    max_depth=4,
+                    learning_rate=0.1,
+                    subsample=0.8,
+                    random_state=random_state
+                )
             }
             
-            predictions[asset] = {
-                'train_pred': train_pred,
-                'test_pred': test_pred,
-                'train_actual': y_train.values,
-                'test_actual': y_test.values,
-                'train_indices': y_train.index,
-                'test_indices': y_test.index
-            }
+            model_scores = {}
+            trained_models = {}
+            
+            for name, model in models_to_try.items():
+                cv_scores = []
+                for train_idx, val_idx in tscv.split(X_train_selected):
+                    X_train_cv, X_val_cv = X_train_selected[train_idx], X_train_selected[val_idx]
+                    y_train_cv, y_val_cv = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                    
+                    model.fit(X_train_cv, y_train_cv)
+                    val_score = model.score(X_val_cv, y_val_cv)
+                    cv_scores.append(val_score)
+                
+                model.fit(X_train_selected, y_train)
+                trained_models[name] = model
+                model_scores[name] = np.mean(cv_scores)
+            
+            best_models = sorted(model_scores.items(), key=lambda x: x[1], reverse=True)[:2]
+            
+            ensemble_predictions = []
+            ensemble_weights = []
+            
+            for model_name, score in best_models:
+                if score > -0.5:
+                    weight = max(0.1, score + 0.5)
+                    ensemble_weights.append(weight)
+                    pred = trained_models[model_name].predict(X_test_selected)
+                    ensemble_predictions.append(pred)
+            
+            if len(ensemble_predictions) > 0:
+                ensemble_weights = np.array(ensemble_weights)
+                ensemble_weights = ensemble_weights / ensemble_weights.sum()
+                
+                final_prediction = np.zeros(len(y_test))
+                for i, pred in enumerate(ensemble_predictions):
+                    final_prediction += ensemble_weights[i] * pred
+                
+                test_score = 1 - np.sum((y_test - final_prediction) ** 2) / np.sum((y_test - y_test.mean()) ** 2)
+                
+                train_pred = np.zeros(len(y_train))
+                for i, (model_name, _) in enumerate(best_models[:len(ensemble_predictions)]):
+                    train_pred += ensemble_weights[i] * trained_models[model_name].predict(X_train_selected)
+                
+                train_score = 1 - np.sum((y_train - train_pred) ** 2) / np.sum((y_train - y_train.mean()) ** 2)
+                
+                cv_score = np.mean([score for _, score in best_models[:len(ensemble_predictions)]])
+                
+                models[asset] = {
+                    'ensemble_models': {name: trained_models[name] for name, _ in best_models[:len(ensemble_predictions)]},
+                    'ensemble_weights': ensemble_weights,
+                    'scaler': scaler,
+                    'selector': selector,
+                    'model_type': 'Ensemble',
+                    'train_score': train_score,
+                    'test_score': test_score,
+                    'cv_score': cv_score,
+                    'prediction_horizon': prediction_horizon,
+                    'best_models': [name for name, _ in best_models[:len(ensemble_predictions)]]
+                }
+                
+                predictions[asset] = {
+                    'train_pred': train_pred,
+                    'test_pred': final_prediction,
+                    'train_actual': y_train.values,
+                    'test_actual': y_test.values
+                }
+            else:
+                print(f"No valid models for {asset}")
         
         self.models = models
         self.predictions = predictions
-        self.scalers = scalers
+        
+        valid_scores = [info['test_score'] for info in models.values() if info['test_score'] > -1]
+        avg_score = np.mean(valid_scores) if valid_scores else -999
+        print(f"Average test R² score: {avg_score:.3f} ({len(valid_scores)} ensemble models)")
+        
+        positive_scores = [score for score in valid_scores if score > 0]
+        if positive_scores:
+            print(f"Positive R² models: {len(positive_scores)}/{len(valid_scores)} (avg: {np.mean(positive_scores):.3f})")
+        
         return models, predictions
     
-    def ml_portfolio_weights(self, risk_aversion=0.5, risk_free_rate=None):
+    def ml_portfolio_weights(self, risk_aversion=1.0, risk_free_rate=0.045, min_weight=0.01):
         if not hasattr(self, 'models'):
             raise ValueError("Run predict_returns() first")
         
         latest_predictions = {}
-        for asset in self.returns.columns:
-            if self.features is not None and hasattr(self, 'scalers'):
-                asset_scaler = self.scalers[asset]
-                
-                latest_features = self.features.iloc[-1:].values
-                latest_features_scaled = asset_scaler.transform(latest_features)
-                pred = self.models[asset]['model'].predict(latest_features_scaled)[0]
-                latest_predictions[asset] = pred
+        model_confidences = {}
         
-        expected_returns = pd.Series(latest_predictions) * 252
+        for asset in self.models.keys():
+            model_info = self.models[asset]
+            scaler = model_info['scaler']
+            selector = model_info['selector']
+            
+            latest_features = self.features.iloc[-1:].fillna(0).values
+            latest_features_scaled = scaler.transform(latest_features)
+            latest_features_selected = selector.transform(latest_features_scaled)
+            
+            if 'ensemble_models' in model_info:
+                ensemble_pred = 0
+                for i, (model_name, model) in enumerate(model_info['ensemble_models'].items()):
+                    model_pred = model.predict(latest_features_selected)[0]
+                    ensemble_pred += model_info['ensemble_weights'][i] * model_pred
+                pred = ensemble_pred
+            else:
+                pred = model_info['model'].predict(latest_features_selected)[0]
+            
+            test_score = model_info['test_score']
+            cv_score = model_info['cv_score']
+            
+            confidence = max(0.0, min(test_score, cv_score)) if test_score > -0.5 else 0.0
+            confidence = max(0.2, confidence + 0.3)
+            
+            latest_predictions[asset] = pred
+            model_confidences[asset] = confidence
         
-        if risk_free_rate is None:
-            risk_free_rate = 0.045
+        expected_returns = pd.Series(latest_predictions)
         
-        # Apply confidence-based scaling to predictions
-        confidence_scaling = {}
-        for asset in self.returns.columns:
-            test_score = self.models[asset]['test_score']
-            # Scale down predictions for low-performing models
-            confidence = max(0.1, test_score) if test_score > -0.5 else 0.1
-            confidence_scaling[asset] = confidence
-        
-        # Adjust expected returns by model confidence
+        adjusted_returns = {}
         for asset in expected_returns.index:
-            expected_returns[asset] *= (1 + confidence_scaling.get(asset, 0.1))
+            base_return = expected_returns[asset]
+            confidence = model_confidences[asset]
+            
+            historical_mean = self.returns[asset].mean()
+            
+            blended_return = confidence * base_return + (1 - confidence) * historical_mean
+            adjusted_returns[asset] = blended_return
         
-        excess_returns = expected_returns - risk_free_rate
+        expected_returns = pd.Series(adjusted_returns) * 252
         
-        cov_matrix = self.returns.cov() * 252
+        from scipy.optimize import minimize
         
-        inv_cov = np.linalg.pinv(cov_matrix.values)
+        def portfolio_variance(weights):
+            return np.dot(weights.T, np.dot(self.returns.cov().values * 252, weights))
         
-        weights = inv_cov @ excess_returns.values / risk_aversion
+        def portfolio_return(weights):
+            return np.sum(expected_returns.values * weights)
         
-        weights = np.maximum(weights, 0)
-        if weights.sum() > 0:
-            weights = weights / weights.sum()
-        else:
-            weights = np.ones(len(weights)) / len(weights)
+        def negative_utility(weights):
+            ret = portfolio_return(weights)
+            var = portfolio_variance(weights)
+            return -(ret - 0.5 * risk_aversion * var)
         
-        # Apply asset class constraints to prevent over-allocation to bonds
-        weights_series = pd.Series(weights, index=expected_returns.index)
+        n_assets = len(expected_returns)
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = tuple((min_weight, 0.25) for _ in range(n_assets))
         
-        # Define asset classes
-        bond_assets = [asset for asset in weights_series.index if asset in ['TLT', 'IEF', 'SHY', 'LQD', 'HYG']]
-        commodity_assets = [asset for asset in weights_series.index if asset in ['GLD', 'SLV', 'USO']]
+        initial_weights = np.ones(n_assets) / n_assets
         
-        # Limit bonds to max 40% and commodities to max 20%
-        if bond_assets:
-            bond_weight = weights_series[bond_assets].sum()
-            if bond_weight > 0.4:
-                scale_factor = 0.4 / bond_weight
-                for asset in bond_assets:
-                    weights_series[asset] *= scale_factor
-        
-        if commodity_assets:
-            commodity_weight = weights_series[commodity_assets].sum()
-            if commodity_weight > 0.2:
-                scale_factor = 0.2 / commodity_weight
-                for asset in commodity_assets:
-                    weights_series[asset] *= scale_factor
-        
-        # Renormalize after constraints
-        weights_series = weights_series / weights_series.sum()
-        weights = weights_series.values
+        try:
+            result = minimize(negative_utility, initial_weights, 
+                            method='SLSQP', bounds=bounds, constraints=constraints)
+            
+            if result.success:
+                weights = result.x
+            else:
+                print("Optimization failed, using equal weights")
+                weights = np.ones(n_assets) / n_assets
+        except:
+            print("Optimization error, using equal weights")
+            weights = np.ones(n_assets) / n_assets
         
         return dict(zip(expected_returns.index, weights))
     
