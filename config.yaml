@@ -1,0 +1,93 @@
+risk_free_rate: 0.045
+data_period: "3y"
+prediction_horizon: 1
+test_size: 0.25
+
+portfolio_constraints:
+  min_weight: 0.01
+  max_weight: 0.25
+  max_sector_weight: 0.40
+
+model_params:
+  n_estimators: 50
+  max_depth: 6
+  min_samples_split: 30
+  regularization_alpha: 2.0
+  cv_folds: 3
+
+asset_universe:
+  large_cap_tech:
+    - AAPL
+    - MSFT 
+    - GOOGL
+    - AMZN
+    - NVDA
+    - META
+    - TSLA
+    - NFLX
+  
+  financials:
+    - JPM
+    - V
+    - MA
+    - BAC
+    - WFC
+    - GS
+  
+  healthcare:
+    - JNJ
+    - UNH
+    - PFE
+    - ABBV
+    - TMO
+    - ABT
+  
+  consumer_discretionary:
+    - HD
+    - NKE
+    - SBUX
+    - MCD
+    - LOW
+    - DIS
+  
+  consumer_staples:
+    - PG
+    - COST
+    - WMT
+    - KO
+    - PEP
+    - CVS
+  
+  industrials:
+    - BA
+    - CAT
+    - HON
+    - UNP
+    - UPS
+    - FDX
+  
+  energy:
+    - XOM
+    - CVX
+    - COP
+    - EOG
+    - SLB
+    - KMI
+  
+  bonds_and_commodities:
+    - TLT
+    - IEF
+    - LQD
+    - GLD
+    - SLV
+    - VNQ
+
+features:
+  lookback_periods: [3, 5, 10, 20, 63]
+  volatility_windows: [5, 21, 63]
+  momentum_windows: [21, 63, 126, 252]
+  
+backtesting:
+  transaction_cost: 0.001
+  rebalance_frequency: 21
+  min_history: 252
