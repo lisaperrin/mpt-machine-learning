@@ -42,6 +42,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.claude/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -94,19 +95,18 @@ ehthumbs.db
 Thumbs.db
 
 # Data and results directories
-data/
 results/
 *.csv
 *.xlsx
 *.pickle
 *.pkl
 
+
 # Financial data cache
 cache/
 temp/
 
 # Model artifacts
-models/
 *.joblib
 *.h5
 *.pt
@@ -120,3 +120,14 @@ logs/
 tmp/
 temp/
 *.tmp
+tmpclaude-*
+NUL
+
+# Node (frontend)
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/package-lock.json
+
+# uv
+uv.lock

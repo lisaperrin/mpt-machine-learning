@@ -1,0 +1,50 @@
+[project]
+name = "portfolioml"
+version = "2.1.0"
+description = "ML-enhanced portfolio optimization platform combining Modern Portfolio Theory with Hierarchical Risk Parity and factor-based ML tilts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "lightgbm>=4.0.0",
+    "yfinance>=0.2.18",
+    "pyyaml>=6.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.6",
+    "plotly>=5.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.25.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+portfolio-optimize = "run_optimization:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["portfolio_optimization"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
