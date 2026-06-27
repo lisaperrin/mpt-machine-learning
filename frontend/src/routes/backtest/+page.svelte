@@ -139,7 +139,7 @@
       </div>
 
       <div class="mb-6">
-        <label class="text-sm font-medium text-gray-700 mb-3 block">Assets ({selectedAssets.size})</label>
+        <div class="text-sm font-medium text-gray-700 mb-3">Assets ({selectedAssets.size})</div>
         <div class="space-y-3 max-h-48 overflow-y-auto">
           {#each Object.entries(assetUniverse) as [sector, assets]}
             <div>
@@ -163,8 +163,9 @@
       </div>
 
       <div class="mb-6">
-        <label class="text-sm font-medium text-gray-700 mb-2 block">Rebalance Frequency</label>
+        <label for="rebalance-frequency" class="text-sm font-medium text-gray-700 mb-2 block">Rebalance Frequency</label>
         <select
+          id="rebalance-frequency"
           bind:value={rebalanceDays}
           class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
         >
@@ -211,7 +212,7 @@
   <div class="lg:col-span-3">
     {#if backtestData || riskData || monteCarloData}
       <div class="border-b border-gray-200 mb-6">
-        <nav class="flex space-x-8" role="tablist" aria-label="Backtest views">
+        <div class="flex space-x-8" role="tablist" aria-label="Backtest views">
           {#each [
             { id: 'equity', label: 'Equity Curves' },
             { id: 'drawdown', label: 'Risk Analysis' },
@@ -232,7 +233,7 @@
               {tab.label}
             </button>
           {/each}
-        </nav>
+        </div>
       </div>
 
       {#if activeTab === 'equity' && backtestData}

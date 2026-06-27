@@ -27,6 +27,7 @@
   let optimizing = false;
   let results = null;
   let error = null;
+  let warnings = [];
   let elapsedSeconds = 0;
   let elapsedTimer = null;
   let abortController = null;
@@ -64,8 +65,19 @@
   }
 
   async function runOptimization() {
-    if (selectedAssets.size < 2) {
-      error = 'Please select at least 2 assets for optimization';
+    if (selectedAssets.size < 3) {
+      error = 'Please select at least 3 assets for optimization';
+      return;
+    }
+
+    const minWeight = constraints.minWeight / 100;
+    const maxWeight = constraints.maxWeight / 100;
+    if (minWeight > maxWeight) {
+      error = 'Min weight cannot be greater than max weight';
+      return;
+    }
+    if (selectedAssets.size * minWeight > 1 || selectedAssets.size * maxWeight < 1) {
+      error = 'These constraints are infeasible for the selected asset count';
       return;
     }
 
@@ -74,6 +86,7 @@
     try {
       optimizing = true;
       error = null;
+      warnings = [];
       elapsedSeconds = 0;
       abortController = new AbortController();
 
@@ -85,8 +98,8 @@
         body: JSON.stringify({
           assets: Array.from(selectedAssets),
           constraints: {
-            min_weight: constraints.minWeight / 100,
-            max_weight: constraints.maxWeight / 100
+            min_weight: minWeight,
+            max_weight: maxWeight
           }
         }),
         signal: abortController.signal
@@ -102,6 +115,7 @@
       }
 
       results = data.results;
+      warnings = data.warnings || [];
     } catch (err) {
       if (err.name === 'AbortError') return;
       console.error('Optimization error:', err);
@@ -130,7 +144,7 @@
       <!-- Asset Selection -->
       <div class="mb-6">
         <div class="flex items-center justify-between mb-3">
-          <label class="text-sm font-medium text-gray-700">Asset Selection</label>
+          <div class="text-sm font-medium text-gray-700">Asset Selection</div>
           <span class="text-xs text-gray-500">{selectedAssets.size} selected</span>
         </div>
         
@@ -175,11 +189,12 @@
 
       <!-- Constraints -->
       <div class="mb-6">
-        <label class="text-sm font-medium text-gray-700 mb-3 block">Portfolio Constraints</label>
+        <div class="text-sm font-medium text-gray-700 mb-3">Portfolio Constraints</div>
         <div class="space-y-4">
           <div>
-            <label class="text-xs text-gray-600">Min Weight (%)</label>
+            <label for="min-weight" class="text-xs text-gray-600">Min Weight (%)</label>
             <input 
+              id="min-weight"
               type="number" 
               bind:value={constraints.minWeight}
               min="0" 
@@ -189,8 +204,9 @@
             />
           </div>
           <div>
-            <label class="text-xs text-gray-600">Max Weight (%)</label>
+            <label for="max-weight" class="text-xs text-gray-600">Max Weight (%)</label>
             <input 
+              id="max-weight"
               type="number" 
               bind:value={constraints.maxWeight}
               min="5" 
@@ -223,7 +239,7 @@
       {:else}
         <button
           on:click={runOptimization}
-          disabled={selectedAssets.size < 2}
+          disabled={selectedAssets.size < 3}
           class="btn btn-primary w-full flex items-center justify-center space-x-2"
         >
           <TrendingUp class="h-4 w-4" />
@@ -234,6 +250,14 @@
       {#if error}
         <div class="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
           <p class="text-sm text-red-600">{error}</p>
+        </div>
+      {/if}
+
+      {#if warnings.length}
+        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
+          {#each warnings as warning}
+            <p class="text-sm text-amber-700">{warning}</p>
+          {/each}
         </div>
       {/if}
     </div>

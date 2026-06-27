@@ -144,7 +144,7 @@
     </div>
   {:else}
     <div class="border-b border-gray-200">
-      <nav class="flex space-x-8" role="tablist" aria-label="Visualization views">
+      <div class="flex space-x-8" role="tablist" aria-label="Visualization views">
         {#each [
           { id: 'frontier', label: 'Efficient Frontier' },
           { id: 'correlations', label: 'Correlations' },
@@ -165,7 +165,7 @@
             {tab.label}
           </button>
         {/each}
-      </nav>
+      </div>
     </div>
 
     {#if loading}

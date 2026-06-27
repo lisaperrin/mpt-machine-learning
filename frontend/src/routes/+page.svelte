@@ -183,7 +183,7 @@
     </div>
   {:else if portfolioData}
     <div class="border-b border-gray-200">
-      <nav class="flex space-x-8" role="tablist" aria-label="Dashboard views">
+      <div class="flex space-x-8" role="tablist" aria-label="Dashboard views">
         {#each [
           { id: 'overview', label: 'Overview' },
           { id: 'frontier', label: 'Efficient Frontier' },
@@ -205,7 +205,7 @@
             {tab.label}
           </button>
         {/each}
-      </nav>
+      </div>
     </div>
 
     {#if activeTab === 'overview'}
