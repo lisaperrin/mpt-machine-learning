@@ -5,10 +5,14 @@ Portfolio optimization platform. Compares equal-weight, Markowitz (max Sharpe / 
 ## Setup
 
 ```bash
-uv sync                      # install deps
+uv sync --extra dev          # install Python deps
 uv run python main.py        # start API on :8000
-cd frontend && npm i && npm run dev  # start frontend on :3000
+cd frontend
+npm ci                       # install frontend deps from lockfile
+npm run dev                  # start frontend on :3000
 ```
+
+On Windows PowerShell, use `npm.cmd` if script execution policy blocks `npm.ps1`.
 
 API docs at http://localhost:8000/docs.
 
@@ -34,6 +38,8 @@ POST `/api/optimize` with `{ "assets": [...], "constraints": { "min_weight": 0.0
 
 Other endpoints: `/api/efficient-frontier`, `/api/correlations`, `/api/backtest-detailed`, `/api/risk-analysis`, `/api/monte-carlo`, `/api/factor-exposures`, `/api/strategy-evaluation`, `/api/assets`.
 
+Optimization responses include diagnostics for each strategy, data-quality metadata, missing tickers, and warnings when a fallback path was used.
+
 ## Configuration
 
 Asset universe, constraints, model params, and backtest settings live in `config.yaml`.
@@ -44,7 +50,26 @@ Asset universe, constraints, model params, and backtest settings live in `config
 make test        # pytest
 make lint        # ruff
 make format      # ruff format
+cd frontend && npm run check
 ```
+
+If `uv` is not installed, install it first from https://docs.astral.sh/uv/ or use an equivalent Python 3.11+ virtual environment with the dependencies from `pyproject.toml`.
+
+## Methodology and safeguards
+
+- Portfolio constraints are validated before optimization. Infeasible bounds such as `3 assets * 40% min_weight` are rejected instead of silently relaxed.
+- Weight projection preserves both `sum(weights) == 1` and per-asset min/max bounds.
+- MPT uses Ledoit-Wolf covariance shrinkage when enough observations are available.
+- Efficient-frontier target returns are derived from the achievable return range, not from volatility.
+- ML views use time-series cross-validation to avoid ordinary K-fold leakage on chronological data.
+- API tests use deterministic synthetic market data rather than live `yfinance` downloads.
+
+## Limitations
+
+- Market data comes from `yfinance`, so production use would need stronger data validation, vendor SLAs, survivorship-bias handling, and corporate-action checks.
+- Backtests are educational and do not model taxes, bid/ask spread, market impact, borrow costs, or execution latency.
+- ML signals are deliberately regularized and blended with HRP/Black-Litterman priors because short-horizon return prediction is noisy.
+- The app is a portfolio and research demo, not an investment recommendation system.
 
 
 Not financial advice.

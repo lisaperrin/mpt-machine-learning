@@ -42,7 +42,6 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
-.claude/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -120,14 +119,11 @@ logs/
 tmp/
 temp/
 *.tmp
-tmpclaude-*
 NUL
 
 # Node (frontend)
 frontend/node_modules/
 frontend/.svelte-kit/
 frontend/build/
-frontend/package-lock.json
 
 # uv
-uv.lock
