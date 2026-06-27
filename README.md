@@ -1,6 +1,6 @@
 # PortfolioML
 
-Portfolio optimization platform. Compares equal-weight, Markowitz (max Sharpe / min vol), cross-sectional factor scoring, and an ML strategy that blends Hierarchical Risk Parity with Black-Litterman views. FastAPI backend, SvelteKit frontend, walk-forward backtesting.
+Portfolio optimization platform. Compares equal-weight, Markowitz (max Sharpe / min vol), cross-sectional factor scoring, and an ML strategy that anchors on Hierarchical Risk Parity with bounded Black-Litterman tilts. FastAPI backend, SvelteKit frontend, walk-forward backtesting.
 
 ## Setup
 
@@ -29,7 +29,7 @@ Standard ML portfolio optimization tries to predict individual asset returns and
 
 - **HRP base allocation** -- Hierarchical Risk Parity clusters assets by correlation and allocates without predicting returns. Based on [Lopez de Prado (2016)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2708678).
 - **Black-Litterman with ML views** -- Ridge regression trained on momentum, quality, and relative strength factors generates per-asset return views with confidence scores. These feed into Black-Litterman, which blends them with a momentum-tilted equilibrium prior. Low-confidence views barely move the posterior; high-confidence views shift it toward the ML prediction.
-- **Auto-tuned blend** -- Walk-forward cross-validation tests HRP/BL blend ratios from 30/70 to 70/30 and picks the one with the best out-of-sample Sharpe.
+- **Bounded ML tilt** -- The final portfolio starts from HRP and only moves partway toward the BL portfolio. The tilt budget is capped in `config.yaml` and scaled by current signal dispersion and volatility regime, not by choosing the historically best Sharpe blend.
 - **Regime detection** -- Short/long-term volatility ratio shifts positioning defensively in high-vol environments.
 
 ## API
@@ -42,7 +42,7 @@ Optimization responses include diagnostics for each strategy, data-quality metad
 
 ## Configuration
 
-Asset universe, constraints, model params, and backtest settings live in `config.yaml`.
+Asset universe, constraints, ML tilt budget, model params, and backtest settings live in `config.yaml`.
 
 ## Development
 
@@ -62,13 +62,14 @@ If `uv` is not installed, install it first from https://docs.astral.sh/uv/ or us
 - MPT uses Ledoit-Wolf covariance shrinkage when enough observations are available.
 - Efficient-frontier target returns are derived from the achievable return range, not from volatility.
 - ML views use time-series cross-validation to avoid ordinary K-fold leakage on chronological data.
+- The live ML allocation does not auto-select an HRP/BL blend from historical performance; it applies a capped tilt away from HRP.
 - API tests use deterministic synthetic market data rather than live `yfinance` downloads.
 
 ## Limitations
 
 - Market data comes from `yfinance`, so production use would need stronger data validation, vendor SLAs, survivorship-bias handling, and corporate-action checks.
 - Backtests are educational and do not model taxes, bid/ask spread, market impact, borrow costs, or execution latency.
-- ML signals are deliberately regularized and blended with HRP/Black-Litterman priors because short-horizon return prediction is noisy.
+- ML signals are deliberately regularized and constrained to bounded HRP tilts because short-horizon return prediction is noisy.
 - The app is a portfolio and research demo, not an investment recommendation system.
 
 

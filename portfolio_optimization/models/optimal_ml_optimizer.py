@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class OptimalMLPortfolioOptimizer:
     """
-    Optimal ML Portfolio Optimizer combining HRP with Black-Litterman.
+    Optimal ML Portfolio Optimizer combining HRP with bounded Black-Litterman tilts.
 
     Architecture:
     1. Base allocation from Hierarchical Risk Parity — stable, no return prediction
@@ -32,9 +32,11 @@ class OptimalMLPortfolioOptimizer:
        - Low confidence → BL stays near equilibrium (safe default)
        - High confidence → BL moves toward ML prediction
        - Max-Sharpe optimization on BL posterior
-    3. Auto-tuned blend ratio via walk-forward cross-validation
-       - Tests HRP/BL blends from 30/70 to 70/30
-       - Selects the blend with best OOS Sharpe ratio
+    3. Bounded tilt overlay
+       - HRP remains the anchor allocation
+       - BL/ML can only move weights inside a capped tilt budget
+       - The budget is based on current signal dispersion and volatility regime,
+         not on selecting the best historical performance mix
     """
 
     def __init__(self,
@@ -363,120 +365,102 @@ class OptimalMLPortfolioOptimizer:
         exp_scores = np.exp(scaled)
         return exp_scores / exp_scores.sum()
 
-    def _find_optimal_blend(self, constraints: Dict) -> float:
+    def _calculate_tilt_budget(self) -> Dict[str, float]:
         """
-        Find optimal HRP/BL blend ratio via walk-forward cross-validation.
+        Calculate how much the BL portfolio may tilt away from the HRP anchor.
 
-        Tests candidate blends [0.3, 0.4, 0.5, 0.6, 0.7] over non-overlapping
-        folds. For each fold, HRP and BL are computed once on training data,
-        then all blends are evaluated on the test window. Returns the blend
-        with the best average OOS Sharpe ratio.
+        This deliberately avoids selecting a historically best-performing blend.
+        It only answers: are current views dispersed enough to justify using
+        part of the configured tilt budget, and should the current volatility
+        regime reduce that budget?
         """
-        candidate_blends = [0.3, 0.4, 0.5, 0.6, 0.7]
-        n_days = len(self.returns)
-        train_window = min(252, n_days - 63)
-        test_window = 63
-        max_folds = 3
+        settings = self.config.get('ml_tilt', {})
+        max_tilt = float(settings.get('max_tilt', 0.35))
+        max_tilt = float(np.clip(max_tilt, 0.0, 1.0))
 
-        if n_days < train_window + test_window:
-            logger.info("Insufficient data for blend optimization, using default 0.5")
-            return 0.5
-
-        min_w, max_w = bounds_from_constraints(
-            len(self.returns.columns),
-            constraints,
-            default_min=0.005,
-            default_max=0.25
+        target_signal_dispersion = max(
+            float(settings.get('target_signal_dispersion', 0.05)),
+            1e-8
         )
-        blend_sharpes = {b: [] for b in candidate_blends}
-
-        fold_start = max(0, n_days - max_folds * test_window - train_window)
-        n_folds = 0
-
-        while fold_start + train_window + test_window <= n_days and n_folds < max_folds:
-            train_end = fold_start + train_window
-            test_end = train_end + test_window
-
-            train_returns = self.returns.iloc[fold_start:train_end]
-            train_prices = self.prices.iloc[fold_start:train_end]
-            test_returns = self.returns.iloc[train_end:test_end]
-
-            try:
-                temp = OptimalMLPortfolioOptimizer(
-                    train_returns, train_prices, self.config
-                )
-
-                hrp_w = temp.calculate_hrp_weights()
-
-                recent = train_returns.tail(252).dropna()
-                try:
-                    cov = LedoitWolf().fit(recent).covariance_
-                except Exception:
-                    cov = recent.cov().values
-
-                Q, P, conf = temp.generate_ml_views()
-                mu_bl, sigma_bl = temp.black_litterman_returns(cov, Q, P, conf)
-                bl_w = temp.optimize_bl_portfolio(
-                    mu_bl, sigma_bl, list(train_returns.columns),
-                    min_weight=min_w, max_weight=max_w
-                )
-
-                for blend in candidate_blends:
-                    blended = {}
-                    bl_share = 1.0 - blend
-                    for asset in hrp_w:
-                        w = blend * hrp_w[asset] + bl_share * bl_w.get(asset, 0.0)
-                        blended[asset] = w
-                    projected = project_weights_to_bounds(
-                        [blended[asset] for asset in train_returns.columns],
-                        min_w,
-                        max_w
-                    )
-                    blended = dict(zip(train_returns.columns, projected))
-
-                    weights_s = pd.Series(blended).reindex(test_returns.columns, fill_value=0)
-                    port_rets = (test_returns * weights_s).sum(axis=1).values
-                    blend_sharpes[blend].append(self._annualized_sharpe(port_rets))
-
-            except Exception as e:
-                logger.warning(f"Blend CV fold {n_folds} failed: {e}")
-
-            fold_start += test_window
-            n_folds += 1
-
-        avg_sharpes = {b: np.mean(s) for b, s in blend_sharpes.items() if len(s) > 0}
-        if not avg_sharpes:
-            logger.info("Blend optimization produced no results, using default 0.5")
-            return 0.5
-
-        best_blend = max(avg_sharpes, key=avg_sharpes.get)
-
-        logger.info(
-            f"Blend CV ({n_folds} folds): "
-            + ", ".join(f"{b:.0%}HRP={s:.3f}" for b, s in sorted(avg_sharpes.items()))
+        high_volatility_ratio = max(
+            float(settings.get('high_volatility_ratio', 1.25)),
+            1.0
         )
-        logger.info(f"Selected blend: {best_blend:.0%} HRP / {1 - best_blend:.0%} BL "
-                     f"(Sharpe={avg_sharpes[best_blend]:.3f})")
+        min_volatility_scale = float(np.clip(
+            settings.get('min_volatility_scale', 0.50),
+            0.0,
+            1.0
+        ))
 
-        self.bl_diagnostics['blend_cv'] = {
-            'candidate_sharpes': {f"{int(b*100)}pct_hrp": round(s, 4) for b, s in avg_sharpes.items()},
-            'selected_hrp_weight': best_blend,
-            'n_folds': n_folds
+        if not self.ml_views:
+            return {
+                'tilt_budget': 0.0,
+                'max_tilt': max_tilt,
+                'signal_dispersion': 0.0,
+                'signal_scale': 0.0,
+                'avg_confidence': 0.0,
+                'confidence_scale': 0.0,
+                'volatility_ratio': 1.0,
+                'volatility_scale': 1.0,
+            }
+
+        view_values = np.array(
+            [details['predicted_return'] for details in self.ml_views.values()],
+            dtype=float
+        )
+        confidence_values = np.array(
+            [details['confidence'] for details in self.ml_views.values()],
+            dtype=float
+        )
+
+        asset_vol = float(self.returns.tail(63).std().replace(0, np.nan).median())
+        if not np.isfinite(asset_vol) or asset_vol <= 0:
+            asset_vol = float(self.returns.std().replace(0, np.nan).median())
+        if not np.isfinite(asset_vol) or asset_vol <= 0:
+            asset_vol = 1.0
+
+        signal_dispersion = float(np.std(view_values) / (asset_vol + 1e-8))
+        signal_scale = float(np.clip(
+            signal_dispersion / target_signal_dispersion,
+            0.0,
+            1.0
+        ))
+
+        avg_confidence = float(np.mean(confidence_values))
+        confidence_scale = float(np.clip((avg_confidence - 0.25) / 0.45, 0.0, 1.0))
+        raw_budget = max_tilt * (0.70 * signal_scale + 0.30 * confidence_scale)
+
+        market_returns = self.returns.mean(axis=1)
+        recent_vol = float(market_returns.tail(21).std())
+        long_vol = float(market_returns.tail(252).std())
+        volatility_ratio = recent_vol / (long_vol + 1e-8) if long_vol > 0 else 1.0
+        if not np.isfinite(volatility_ratio):
+            volatility_ratio = 1.0
+
+        if volatility_ratio <= high_volatility_ratio:
+            volatility_scale = 1.0
+        else:
+            excess = min((volatility_ratio - high_volatility_ratio) / high_volatility_ratio, 1.0)
+            volatility_scale = 1.0 - (1.0 - min_volatility_scale) * excess
+
+        tilt_budget = float(np.clip(raw_budget * volatility_scale, 0.0, max_tilt))
+
+        return {
+            'tilt_budget': tilt_budget,
+            'max_tilt': max_tilt,
+            'signal_dispersion': signal_dispersion,
+            'signal_scale': signal_scale,
+            'avg_confidence': avg_confidence,
+            'confidence_scale': confidence_scale,
+            'volatility_ratio': float(volatility_ratio),
+            'volatility_scale': float(volatility_scale),
         }
-
-        return best_blend
-
-    @staticmethod
-    def _annualized_sharpe(returns: np.ndarray) -> float:
-        if len(returns) < 2 or np.std(returns) < 1e-10:
-            return 0.0
-        return float(np.mean(returns) * 252 / (np.std(returns) * np.sqrt(252)))
 
     def get_optimal_portfolio_weights(self,
                                       constraints: Optional[Dict] = None) -> Dict[str, float]:
         """
-        Generate optimal portfolio weights: HRP + Black-Litterman with
-        auto-tuned blend ratio via walk-forward cross-validation.
+        Generate optimal portfolio weights: HRP anchor plus bounded
+        Black-Litterman/ML tilt.
         """
         if constraints is None:
             constraints = self.config.get('portfolio_constraints', {})
@@ -488,11 +472,9 @@ class OptimalMLPortfolioOptimizer:
             default_max=0.25
         )
 
-        hrp_weight = self._find_optimal_blend(constraints)
+        logger.info("Generating optimal portfolio with bounded BL tilt...")
 
-        logger.info(f"Generating optimal portfolio (HRP: {hrp_weight:.0%}, BL: {1 - hrp_weight:.0%})...")
-
-        hrp_weights = self.calculate_hrp_weights()
+        hrp_weights = self._apply_constraints(self.calculate_hrp_weights(), constraints)
 
         recent_returns = self.returns.tail(252).dropna()
         try:
@@ -510,19 +492,30 @@ class OptimalMLPortfolioOptimizer:
             min_weight=min_w, max_weight=max_w
         )
 
-        bl_share = 1.0 - hrp_weight
+        tilt_diagnostics = self._calculate_tilt_budget()
+        tilt_budget = tilt_diagnostics['tilt_budget']
         final_weights = {}
         for asset in hrp_weights:
-            blended = hrp_weight * hrp_weights[asset] + bl_share * bl_weights.get(asset, 0.0)
+            blended = hrp_weights[asset] + tilt_budget * (
+                bl_weights.get(asset, 0.0) - hrp_weights[asset]
+            )
             final_weights[asset] = blended
 
         final_weights = self._apply_constraints(final_weights, constraints)
 
         self.weight_comparison = self.compare_hrp_vs_final(hrp_weights, final_weights)
-        self.bl_diagnostics['selected_hrp_weight'] = hrp_weight
+        self.bl_diagnostics['approach'] = 'bounded_tilt'
+        self.bl_diagnostics.update(tilt_diagnostics)
+        self.bl_diagnostics['selected_hrp_weight'] = 1.0 - tilt_budget
+        self.bl_diagnostics['selected_bl_weight'] = tilt_budget
         self.bl_diagnostics['warnings'] = self.warnings
         self.bl_diagnostics['status'] = 'optimized' if not self.warnings else 'optimized_with_warnings'
 
+        logger.info(
+            f"Bounded tilt selected: HRP={1 - tilt_budget:.0%}, BL={tilt_budget:.0%}, "
+            f"signal_dispersion={tilt_diagnostics['signal_dispersion']:.3f}, "
+            f"vol_ratio={tilt_diagnostics['volatility_ratio']:.2f}"
+        )
         logger.info(f"Optimal portfolio: {len(final_weights)} assets, "
                     f"range {min(final_weights.values()):.3f}-{max(final_weights.values()):.3f}")
 

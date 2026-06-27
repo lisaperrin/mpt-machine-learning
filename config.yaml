@@ -8,6 +8,12 @@ portfolio_constraints:
   max_weight: 0.25
   max_sector_weight: 0.40
 
+ml_tilt:
+  max_tilt: 0.35
+  target_signal_dispersion: 0.05
+  high_volatility_ratio: 1.25
+  min_volatility_scale: 0.50
+
 model_params:
   n_estimators: 50
   max_depth: 6

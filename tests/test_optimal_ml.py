@@ -35,7 +35,10 @@ def sample_prices(sample_returns):
 def optimizer(sample_returns, sample_prices):
     return OptimalMLPortfolioOptimizer(
         sample_returns, sample_prices,
-        {'portfolio_constraints': {'min_weight': 0.01, 'max_weight': 0.40}}
+        {
+            'portfolio_constraints': {'min_weight': 0.01, 'max_weight': 0.40},
+            'ml_tilt': {'max_tilt': 0.35},
+        }
     )
 
 
@@ -136,6 +139,35 @@ class TestFullPipeline:
     def test_bl_diagnostics_available(self, optimizer):
         optimizer.get_optimal_portfolio_weights()
         assert len(optimizer.bl_diagnostics) > 0
+
+    def test_bounded_tilt_diagnostics_available(self, optimizer):
+        optimizer.get_optimal_portfolio_weights()
+        diagnostics = optimizer.bl_diagnostics
+
+        assert diagnostics['approach'] == 'bounded_tilt'
+        assert 0.0 <= diagnostics['tilt_budget'] <= diagnostics['max_tilt']
+        assert diagnostics['selected_bl_weight'] == diagnostics['tilt_budget']
+        assert abs(
+            diagnostics['selected_hrp_weight'] + diagnostics['selected_bl_weight'] - 1.0
+        ) < 1e-12
+        assert 'blend_cv' not in diagnostics
+
+    def test_bounded_tilt_respects_configured_cap(self, sample_returns, sample_prices):
+        capped_optimizer = OptimalMLPortfolioOptimizer(
+            sample_returns,
+            sample_prices,
+            {
+                'portfolio_constraints': {'min_weight': 0.01, 'max_weight': 0.40},
+                'ml_tilt': {'max_tilt': 0.10},
+            }
+        )
+
+        capped_optimizer.get_optimal_portfolio_weights()
+
+        assert capped_optimizer.bl_diagnostics['tilt_budget'] <= 0.10 + 1e-12
+
+    def test_live_optimizer_has_no_historical_blend_selector(self, optimizer):
+        assert not hasattr(optimizer, '_find_optimal_blend')
 
 
 class TestSortinoCorrectness:
