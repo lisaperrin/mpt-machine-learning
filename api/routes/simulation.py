@@ -4,7 +4,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from scipy.optimize import minimize as scipy_minimize
 
-from api.cache import config, get_portfolio_data, get_cached_result, set_cached_result
+from api.cache import config, get_cached_result, get_portfolio_data, set_cached_result
 from portfolio_optimization.models.mpt import ModernPortfolioTheory
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,11 @@ async def get_efficient_frontier(
 
         min_ret = min_vol_portfolio['return']
         max_ret = max(mpt.mean_returns)
+        if max_ret <= min_ret:
+            max_ret = min_ret + 1e-6
 
-        target_returns = np.linspace(min_ret, max_ret * 0.95, num_portfolios)
+        upper_ret = max(max_ret * 0.95, min_ret + 1e-6)
+        target_returns = np.linspace(min_ret, upper_ret, num_portfolios)
 
         for target in target_returns:
             try:

@@ -1,9 +1,14 @@
+import logging
 from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
+
+from portfolio_optimization.utils.constraints import project_weights_to_bounds, validate_weight_bounds
+
+logger = logging.getLogger(__name__)
 
 
 class ModernPortfolioTheory:
@@ -46,15 +51,15 @@ class ModernPortfolioTheory:
         return self.portfolio_performance(weights)[1]
 
     def max_sharpe_portfolio(self, min_weight: float = 0.0, max_weight: float = 1.0) -> Dict:
-        # Only adjust constraints if they're mathematically impossible
-        # For portfolio optimization, it's fine if sum of max_weights > 1.0
-        # The constraint will ensure weights sum to 1.0 while respecting bounds
-        if self.num_assets * min_weight > 1.0:
-            min_weight = 0.8 / self.num_assets  # Leave some room
+        min_weight, max_weight = validate_weight_bounds(self.num_assets, min_weight, max_weight)
 
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
         bounds = tuple((min_weight, max_weight) for _ in range(self.num_assets))
-        initial_guess = np.array([1/self.num_assets] * self.num_assets)
+        initial_guess = project_weights_to_bounds(
+            np.array([1/self.num_assets] * self.num_assets),
+            min_weight,
+            max_weight
+        )
 
         try:
             result = minimize(self.negative_sharpe, initial_guess,
@@ -68,56 +73,48 @@ class ModernPortfolioTheory:
                     'weights': dict(zip(self.returns.columns, optimal_weights)),
                     'return': ret,
                     'volatility': vol,
-                    'sharpe_ratio': sharpe
+                    'sharpe_ratio': sharpe,
+                    'diagnostics': {'status': 'optimized'}
                 }
             else:
-                print(f"Max Sharpe optimization failed: {result.message}")
-                # Try with relaxed constraints
-                try:
-                    relaxed_bounds = tuple((0.0, 1.0) for _ in range(self.num_assets))
-                    result2 = minimize(self.negative_sharpe, initial_guess,
-                                     method='SLSQP', bounds=relaxed_bounds, constraints=constraints)
-                    if result2.success:
-                        optimal_weights = result2.x
-                        ret, vol, sharpe = self.portfolio_performance(optimal_weights)
-                        return {
-                            'weights': dict(zip(self.returns.columns, optimal_weights)),
-                            'return': ret,
-                            'volatility': vol,
-                            'sharpe_ratio': sharpe
-                        }
-                except Exception:
-                    pass
-
-                # Fallback to equal weights if optimization fails
-                equal_weights = np.array([1/self.num_assets] * self.num_assets)
+                logger.warning("Max Sharpe optimization failed: %s", result.message)
+                equal_weights = project_weights_to_bounds(initial_guess, min_weight, max_weight)
                 ret, vol, sharpe = self.portfolio_performance(equal_weights)
-                print("Max Sharpe falling back to equal weights")
                 return {
                     'weights': dict(zip(self.returns.columns, equal_weights)),
                     'return': ret,
                     'volatility': vol,
-                    'sharpe_ratio': sharpe
+                    'sharpe_ratio': sharpe,
+                    'diagnostics': {
+                        'status': 'fallback_equal_weight',
+                        'reason': str(result.message)
+                    }
                 }
         except Exception as e:
-            print(f"Max Sharpe optimization error: {e}")
-            # Fallback to equal weights if any error occurs
-            equal_weights = np.array([1/self.num_assets] * self.num_assets)
+            logger.warning("Max Sharpe optimization error: %s", e)
+            equal_weights = project_weights_to_bounds(initial_guess, min_weight, max_weight)
             ret, vol, sharpe = self.portfolio_performance(equal_weights)
             return {
                 'weights': dict(zip(self.returns.columns, equal_weights)),
                 'return': ret,
                 'volatility': vol,
-                'sharpe_ratio': sharpe
+                'sharpe_ratio': sharpe,
+                'diagnostics': {
+                    'status': 'fallback_equal_weight',
+                    'reason': str(e)
+                }
             }
 
     def min_volatility_portfolio(self, min_weight: float = 0.0, max_weight: float = 1.0) -> Dict:
-        if self.num_assets * min_weight > 1.0:
-            min_weight = 0.8 / self.num_assets
+        min_weight, max_weight = validate_weight_bounds(self.num_assets, min_weight, max_weight)
 
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
         bounds = tuple((min_weight, max_weight) for _ in range(self.num_assets))
-        initial_guess = np.array([1/self.num_assets] * self.num_assets)
+        initial_guess = project_weights_to_bounds(
+            np.array([1/self.num_assets] * self.num_assets),
+            min_weight,
+            max_weight
+        )
 
         try:
             result = minimize(self.portfolio_volatility, initial_guess,
@@ -131,54 +128,46 @@ class ModernPortfolioTheory:
                     'weights': dict(zip(self.returns.columns, optimal_weights)),
                     'return': ret,
                     'volatility': vol,
-                    'sharpe_ratio': sharpe
+                    'sharpe_ratio': sharpe,
+                    'diagnostics': {'status': 'optimized'}
                 }
             else:
-                print(f"Min Vol optimization failed: {result.message}")
-                # Try with relaxed constraints
-                try:
-                    relaxed_bounds = tuple((0.0, 1.0) for _ in range(self.num_assets))
-                    result2 = minimize(self.portfolio_volatility, initial_guess,
-                                     method='SLSQP', bounds=relaxed_bounds, constraints=constraints)
-                    if result2.success:
-                        optimal_weights = result2.x
-                        ret, vol, sharpe = self.portfolio_performance(optimal_weights)
-                        return {
-                            'weights': dict(zip(self.returns.columns, optimal_weights)),
-                            'return': ret,
-                            'volatility': vol,
-                            'sharpe_ratio': sharpe
-                        }
-                except Exception:
-                    pass
-
-                # Fallback to equal weights if optimization fails
-                equal_weights = np.array([1/self.num_assets] * self.num_assets)
+                logger.warning("Min Vol optimization failed: %s", result.message)
+                equal_weights = project_weights_to_bounds(initial_guess, min_weight, max_weight)
                 ret, vol, sharpe = self.portfolio_performance(equal_weights)
-                print("Min Vol falling back to equal weights")
                 return {
                     'weights': dict(zip(self.returns.columns, equal_weights)),
                     'return': ret,
                     'volatility': vol,
-                    'sharpe_ratio': sharpe
+                    'sharpe_ratio': sharpe,
+                    'diagnostics': {
+                        'status': 'fallback_equal_weight',
+                        'reason': str(result.message)
+                    }
                 }
         except Exception as e:
-            print(f"Min Vol optimization error: {e}")
-            # Fallback to equal weights if any error occurs
-            equal_weights = np.array([1/self.num_assets] * self.num_assets)
+            logger.warning("Min Vol optimization error: %s", e)
+            equal_weights = project_weights_to_bounds(initial_guess, min_weight, max_weight)
             ret, vol, sharpe = self.portfolio_performance(equal_weights)
             return {
                 'weights': dict(zip(self.returns.columns, equal_weights)),
                 'return': ret,
                 'volatility': vol,
-                'sharpe_ratio': sharpe
+                'sharpe_ratio': sharpe,
+                'diagnostics': {
+                    'status': 'fallback_equal_weight',
+                    'reason': str(e)
+                }
             }
 
     def efficient_frontier(self, num_portfolios: int = 50) -> Tuple[np.ndarray, np.ndarray]:
-        min_vol = self.min_volatility_portfolio()['volatility']
+        min_ret = self.min_volatility_portfolio()['return']
         max_ret = max(self.mean_returns)
+        if max_ret <= min_ret:
+            max_ret = min_ret + 1e-6
 
-        target_returns = np.linspace(min_vol * 1.5, max_ret * 0.9, num_portfolios)
+        upper_ret = max(max_ret * 0.95, min_ret + 1e-6)
+        target_returns = np.linspace(min_ret, upper_ret, num_portfolios)
         volatilities = []
 
         for target in target_returns:

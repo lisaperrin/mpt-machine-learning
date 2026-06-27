@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from portfolio_optimization.utils.constraints import project_weights_to_bounds
+
 
 class RiskAnalyzer:
     def __init__(self, returns: pd.Series, risk_free_rate: float = 0.045, confidence_level: float = 0.05):
@@ -97,15 +99,12 @@ class PortfolioRiskManager:
         self.max_sector_exposure = constraints.get('max_sector_weight', 0.40)
 
     def apply_constraints(self, weights: Dict[str, float]) -> Dict[str, float]:
-        weights_array = np.array(list(weights.values()))
         asset_names = list(weights.keys())
-
-        weights_array = np.clip(weights_array, self.min_position_size, self.max_position_size)
-
-        if weights_array.sum() > 0:
-            weights_array = weights_array / weights_array.sum()
-        else:
-            weights_array = np.ones(len(weights_array)) / len(weights_array)
+        weights_array = project_weights_to_bounds(
+            list(weights.values()),
+            self.min_position_size,
+            self.max_position_size
+        )
 
         return dict(zip(asset_names, weights_array))
 

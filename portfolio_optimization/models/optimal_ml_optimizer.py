@@ -1,5 +1,4 @@
 import logging
-import warnings
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -9,10 +8,14 @@ from scipy.optimize import minimize
 from scipy.spatial.distance import squareform
 from sklearn.covariance import LedoitWolf
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
-warnings.filterwarnings('ignore')
+from portfolio_optimization.utils.constraints import (
+    bounds_from_constraints,
+    project_weights_to_bounds,
+    validate_weight_bounds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,7 @@ class OptimalMLPortfolioOptimizer:
         self.ml_views = {}
         self.bl_diagnostics = {}
         self.weight_comparison = {}
+        self.warnings = []
 
     def calculate_hrp_weights(self) -> Dict[str, float]:
         """
@@ -193,7 +197,12 @@ class OptimalMLPortfolioOptimizer:
             X_scaled = scaler.fit_transform(X)
 
             model = Ridge(alpha=self.ridge_alpha)
-            cv_scores = cross_val_score(model, X_scaled, y, cv=5, scoring='r2')
+            n_splits = min(5, max(2, len(X_scaled) // 30))
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+            cv_scores = []
+            for train_idx, val_idx in tscv.split(X_scaled):
+                model.fit(X_scaled[train_idx], y[train_idx])
+                cv_scores.append(model.score(X_scaled[val_idx], y[val_idx]))
             mean_r2 = max(0.0, float(np.mean(cv_scores)))
             ridge_r2s.append(mean_r2)
 
@@ -288,7 +297,9 @@ class OptimalMLPortfolioOptimizer:
             mu_bl = sigma_bl @ (tau_sigma_inv @ pi + P.T @ omega_inv @ Q)
 
         except np.linalg.LinAlgError:
-            logger.warning("BL matrix inversion failed, falling back to equilibrium")
+            message = "BL matrix inversion failed, falling back to equilibrium"
+            logger.warning(message)
+            self.warnings.append(message)
             mu_bl = pi
             sigma_bl = tau_sigma
 
@@ -313,6 +324,7 @@ class OptimalMLPortfolioOptimizer:
         Max-Sharpe optimization on Black-Litterman posterior.
         """
         n = len(asset_names)
+        min_weight, max_weight = validate_weight_bounds(n, min_weight, max_weight)
         rf_daily = self.risk_free_rate / 252
 
         def neg_sharpe(w):
@@ -322,7 +334,7 @@ class OptimalMLPortfolioOptimizer:
 
         constraints = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}
         bounds = tuple((min_weight, max_weight) for _ in range(n))
-        w0 = np.ones(n) / n
+        w0 = project_weights_to_bounds(np.ones(n) / n, min_weight, max_weight)
 
         try:
             result = minimize(neg_sharpe, w0, method='SLSQP',
@@ -330,15 +342,17 @@ class OptimalMLPortfolioOptimizer:
             if result.success:
                 weights = result.x
             else:
-                logger.warning(f"BL optimization failed: {result.message}, using softmax fallback")
+                message = f"BL optimization failed: {result.message}, using softmax fallback"
+                logger.warning(message)
+                self.warnings.append(message)
                 weights = self._softmax_weights(mu_bl)
         except Exception as e:
-            logger.warning(f"BL optimization error: {e}, using softmax fallback")
+            message = f"BL optimization error: {e}, using softmax fallback"
+            logger.warning(message)
+            self.warnings.append(message)
             weights = self._softmax_weights(mu_bl)
 
-        # Ensure bounds
-        weights = np.clip(weights, min_weight, max_weight)
-        weights /= weights.sum()
+        weights = project_weights_to_bounds(weights, min_weight, max_weight)
 
         return dict(zip(asset_names, weights.tolist()))
 
@@ -368,8 +382,12 @@ class OptimalMLPortfolioOptimizer:
             logger.info("Insufficient data for blend optimization, using default 0.5")
             return 0.5
 
-        min_w = constraints.get('min_weight', 0.005)
-        max_w = constraints.get('max_weight', 0.25)
+        min_w, max_w = bounds_from_constraints(
+            len(self.returns.columns),
+            constraints,
+            default_min=0.005,
+            default_max=0.25
+        )
         blend_sharpes = {b: [] for b in candidate_blends}
 
         fold_start = max(0, n_days - max_folds * test_window - train_window)
@@ -408,10 +426,13 @@ class OptimalMLPortfolioOptimizer:
                     bl_share = 1.0 - blend
                     for asset in hrp_w:
                         w = blend * hrp_w[asset] + bl_share * bl_w.get(asset, 0.0)
-                        blended[asset] = max(0.001, w)
-                    total = sum(blended.values())
-                    for asset in blended:
-                        blended[asset] /= total
+                        blended[asset] = w
+                    projected = project_weights_to_bounds(
+                        [blended[asset] for asset in train_returns.columns],
+                        min_w,
+                        max_w
+                    )
+                    blended = dict(zip(train_returns.columns, projected))
 
                     weights_s = pd.Series(blended).reindex(test_returns.columns, fill_value=0)
                     port_rets = (test_returns * weights_s).sum(axis=1).values
@@ -460,8 +481,12 @@ class OptimalMLPortfolioOptimizer:
         if constraints is None:
             constraints = self.config.get('portfolio_constraints', {})
 
-        min_w = constraints.get('min_weight', 0.005)
-        max_w = constraints.get('max_weight', 0.25)
+        min_w, max_w = bounds_from_constraints(
+            len(self.returns.columns),
+            constraints,
+            default_min=0.005,
+            default_max=0.25
+        )
 
         hrp_weight = self._find_optimal_blend(constraints)
 
@@ -489,16 +514,14 @@ class OptimalMLPortfolioOptimizer:
         final_weights = {}
         for asset in hrp_weights:
             blended = hrp_weight * hrp_weights[asset] + bl_share * bl_weights.get(asset, 0.0)
-            final_weights[asset] = max(0.001, blended)
-
-        total = sum(final_weights.values())
-        for asset in final_weights:
-            final_weights[asset] /= total
+            final_weights[asset] = blended
 
         final_weights = self._apply_constraints(final_weights, constraints)
 
         self.weight_comparison = self.compare_hrp_vs_final(hrp_weights, final_weights)
         self.bl_diagnostics['selected_hrp_weight'] = hrp_weight
+        self.bl_diagnostics['warnings'] = self.warnings
+        self.bl_diagnostics['status'] = 'optimized' if not self.warnings else 'optimized_with_warnings'
 
         logger.info(f"Optimal portfolio: {len(final_weights)} assets, "
                     f"range {min(final_weights.values()):.3f}-{max(final_weights.values()):.3f}")
@@ -537,18 +560,19 @@ class OptimalMLPortfolioOptimizer:
         return {'asset_comparison': comparison, 'summary': summary}
 
     def _apply_constraints(self, weights: Dict[str, float], constraints: Dict) -> Dict[str, float]:
-        min_weight = constraints.get('min_weight', 0.005)
-        max_weight = constraints.get('max_weight', 0.15)
-
-        constrained = {}
-        for asset, weight in weights.items():
-            constrained[asset] = np.clip(weight, min_weight, max_weight)
-
-        total = sum(constrained.values())
-        for asset in constrained:
-            constrained[asset] /= total
-
-        return constrained
+        assets = list(weights.keys())
+        min_weight, max_weight = bounds_from_constraints(
+            len(assets),
+            constraints,
+            default_min=0.005,
+            default_max=0.15
+        )
+        projected = project_weights_to_bounds(
+            [weights[asset] for asset in assets],
+            min_weight,
+            max_weight
+        )
+        return dict(zip(assets, projected.tolist()))
 
     def get_regime_adjusted_weights(self, base_weights: Dict[str, float]) -> Dict[str, float]:
         recent_vol = self.returns.mean(axis=1).rolling(21).std().iloc[-1]
