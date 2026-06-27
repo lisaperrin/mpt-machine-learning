@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from api.cache import config, get_portfolio_data, get_cached_result, set_cached_result
+from api.cache import config, get_cached_result, get_portfolio_data, set_cached_result
 from portfolio_optimization.models.mpt import ModernPortfolioTheory
 from portfolio_optimization.risk.metrics import RiskAnalyzer
 
